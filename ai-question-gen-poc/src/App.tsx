@@ -1,172 +1,203 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { generateQuestionsFromAI } from "./utils/api";
-import "./index.css";
 
-interface Session {
-  id: string;
-  title: string;
-  content: string;
-  questions: string[];
+interface QuestionSet {
+  one: string[];
+  two: string[];
 }
 
 function App() {
   const [input, setInput] = useState("");
-  const [questions, setQuestions] = useState<string[]>([]);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [currentSession, setCurrentSession] = useState<Session | null>(null);
   const [oneMark, setOneMark] = useState(10);
   const [twoMark, setTwoMark] = useState(5);
-  const [searchTerm, setSearchTerm] = useState("");
+  const [questions, setQuestions] = useState<QuestionSet>({ one: [], two: [] });
+  const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState<QuestionSet[]>([]);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
-  // Load from LocalStorage
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("sessions");
-      if (saved) {
-        setSessions(JSON.parse(saved));
-      }
-    } catch (error) {
-      console.error("Error loading sessions:", error);
-    }
+    const stored = localStorage.getItem("question_history");
+    if (stored) setHistory(JSON.parse(stored));
   }, []);
 
-  // Save sessions
-  const saveSession = useCallback((session: Session) => {
-    try {
-      const updated = [session, ...sessions.slice(0, 4)];
-      setSessions(updated);
-      localStorage.setItem("sessions", JSON.stringify(updated));
-    } catch (error) {
-      console.error("Error saving session:", error);
-    }
-  }, [sessions]);
+  useEffect(() => {
+    localStorage.setItem("question_history", JSON.stringify(history.slice(0, 5)));
+  }, [history]);
 
   const handleGenerate = async () => {
-    if (!input.trim()) return;
-
+    setLoading(true);
     try {
       const result = await generateQuestionsFromAI(input, oneMark, twoMark);
-      const newSession: Session = {
-        id: Date.now().toString(),
-        title: input.slice(0, 20) + "...",
-        content: input,
-        questions: result,
-      };
-
-      setCurrentSession(newSession);
-      setQuestions(result);
-      saveSession(newSession);
-    } catch (error) {
-      console.error("Error generating questions:", error);
-      // You might want to add error handling UI here
+      const cleaned = result
+        .map((line) => line.trim())
+        .filter(
+          (line) =>
+            line &&
+            !/^\d+\.\s*(1|2)-mark questions[:]?$/i.test(line) &&
+            !/questions[:]?$/i.test(line)
+        );
+      const merged = mergeQuestionsAndAnswers(cleaned);
+      const two = merged.slice(0, twoMark);
+      const one = merged.slice(twoMark);
+      const newSet = { one, two };
+      setQuestions(newSet);
+      setHistory((prev) => [newSet, ...prev.slice(0, 4)]);
+      setActiveIndex(0);
+    } catch (err) {
+      alert("Failed to generate questions. Check API key or network.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleSessionClick = useCallback((session: Session) => {
-    setCurrentSession(session);
-    setQuestions(session.questions);
-  }, []);
+  function mergeQuestionsAndAnswers(lines: string[]): string[] {
+    const result: string[] = [];
+    let i = 0;
+    while (i < lines.length) {
+      const current = cleanText(lines[i]);
+      const next = lines[i + 1] && lines[i + 1].toLowerCase().startsWith("answer:")
+        ? cleanText(lines[i + 1])
+        : null;
+      if (next) {
+        result.push(`${current} (Answer: ${next})`);
+        i += 2;
+      } else {
+        result.push(current);
+        i += 1;
+      }
+    }
+    return result;
+  }
 
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
-  }, []);
+  function cleanText(text: string): string {
+    return text.replace(/^\d+\.\s*/, "").replace(/^Answer:\s*/i, "").trim();
+  }
 
-  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchTerm(e.target.value);
-  }, []);
-
-  const filteredSessions = useMemo(() => 
-    sessions.filter(
-      (s) =>
-        s.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        s.content.toLowerCase().includes(searchTerm.toLowerCase())
-    ),
-    [sessions, searchTerm]
-  );
+  const displayed = activeIndex !== null ? history[activeIndex] : questions;
 
   return (
-    <div className="flex h-screen font-sans">
-      {/* Sidebar */}
-      <div className="w-64 bg-gray-100 p-4 border-r overflow-y-auto">
-        <h2 className="text-xl font-bold mb-2">Previous Sessions</h2>
-        <input
-          type="text"
-          placeholder="Search sessions..."
-          className="w-full mb-4 p-2 border rounded"
-          value={searchTerm}
-          onChange={handleSearchChange}
-        />
-        <ul>
-          {filteredSessions.map((s) => (
+    <div className="flex min-h-screen bg-gray-100">
+      <aside className="w-64 bg-white shadow p-4 border-r hidden md:block">
+        <h2 className="text-lg font-semibold mb-4">Session History</h2>
+        <ul className="space-y-2 text-sm text-gray-700">
+          {history.map((_, idx) => (
             <li
-              key={s.id}
-              onClick={() => handleSessionClick(s)}
-              className="cursor-pointer mb-2 p-2 bg-white rounded shadow hover:bg-blue-100"
+              key={idx}
+              onClick={() => setActiveIndex(idx)}
+              className={`cursor-pointer p-2 rounded hover:bg-gray-100 ${
+                activeIndex === idx ? "bg-gray-200 font-semibold" : ""
+              }`}
             >
-              {s.title}
+              Session {idx + 1}
             </li>
           ))}
         </ul>
-      </div>
+      </aside>
 
-      {/* Main */}
-      <div className="flex-1 p-6 overflow-y-auto">
-        <h1 className="text-2xl font-bold mb-4">AI Question Generator</h1>
+      <main className="flex-1 p-6 overflow-auto">
+        <div className="max-w-3xl mx-auto space-y-6">
+          <h1 className="text-2xl font-bold text-center">AI Question Paper Generator</h1>
 
-        <textarea
-          className="w-full h-40 p-3 border rounded mb-4"
-          placeholder="Paste your chapter or content here..."
-          value={input}
-          onChange={handleInputChange}
-        />
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            rows={6}
+            placeholder="Paste your chapter content here..."
+            className="w-full p-3 border border-gray-300 rounded shadow-sm resize-none"
+          />
 
-        <div className="flex gap-4 mb-4">
-          <div>
-            <label className="block mb-1">1-mark Questions</label>
-            <input
-              type="number"
-              min="0"
-              value={oneMark}
-              onChange={(e) => setOneMark(Math.max(0, parseInt(e.target.value) || 0))}
-              className="border p-2 rounded w-24"
-            />
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium">1-mark Questions</label>
+              <input
+                type="number"
+                value={oneMark}
+                onChange={(e) => setOneMark(Number(e.target.value))}
+                className="w-full p-2 border border-gray-300 rounded"
+              />
+            </div>
+            <div className="flex-1">
+              <label className="block text-sm font-medium">2-mark Questions</label>
+              <input
+                type="number"
+                value={twoMark}
+                onChange={(e) => setTwoMark(Number(e.target.value))}
+                className="w-full p-2 border border-gray-300 rounded"
+              />
+            </div>
           </div>
-          <div>
-            <label className="block mb-1">2-mark Questions</label>
-            <input
-              type="number"
-              min="0"
-              value={twoMark}
-              onChange={(e) => setTwoMark(Math.max(0, parseInt(e.target.value) || 0))}
-              className="border p-2 rounded w-24"
-            />
-          </div>
-        </div>
 
-        <button
-          onClick={handleGenerate}
-          disabled={!input.trim()}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed"
-        >
-          Generate Questions
-        </button>
-
-        {questions.length > 0 && (
-          <div className="mt-6">
-            <h2 className="text-xl font-semibold mb-2">Generated Questions:</h2>
-            <ul className="space-y-3">
-              {questions.map((q, i) => (
-                <li
-                  key={i}
-                  className="p-3 bg-white rounded shadow border-l-4 border-blue-600"
+          <button
+            onClick={handleGenerate}
+            className="w-full p-3 text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50"
+            disabled={loading}
+          >
+            {loading ? (
+              <div className="flex items-center justify-center gap-2">
+                <svg
+                  className="w-5 h-5 animate-spin text-white"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
                 >
-                  {q}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  ></circle>
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v8H4z"
+                  ></path>
+                </svg>
+                Generating...
+              </div>
+            ) : (
+              "Generate Questions"
+            )}
+          </button>
+
+          {(displayed.two.length > 0 || displayed.one.length > 0) && (
+            <div className="mt-6 space-y-6">
+              {displayed.two.length > 0 && (
+                <div>
+                  <h2 className="text-xl font-semibold text-blue-700 mb-2">2-mark Questions:</h2>
+                  <ul className="space-y-3">
+                    {displayed.two.map((q, idx) => (
+                      <li
+                        key={idx}
+                        className="p-3 bg-white shadow rounded border-l-4 border-blue-500"
+                      >
+                        <span className="font-medium">{idx + 1}.</span> {q}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {displayed.one.length > 0 && (
+                <div>
+                  <h2 className="text-xl font-semibold text-green-700 mb-2">1-mark Questions:</h2>
+                  <ul className="space-y-3">
+                    {displayed.one.map((q, idx) => (
+                      <li
+                        key={idx}
+                        className="p-3 bg-white shadow rounded border-l-4 border-green-500"
+                      >
+                        <span className="font-medium">{idx + 1}.</span> {q}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
     </div>
   );
 }
